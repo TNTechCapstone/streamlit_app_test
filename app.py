@@ -142,7 +142,7 @@ def load_session_into_ui(session_id: str) -> None:
 # ----------------------------
 def render_home() -> None:
     st.title("Smart Golf Visor")
-    st.caption("Prototype UI (BLE ignored for now)")
+    st.caption("Prototype UI")
 
     st.markdown("")
 
