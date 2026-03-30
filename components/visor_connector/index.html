@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Visor Connector</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Segoe UI", sans-serif;
+      }
+
+      body {
+        margin: 0;
+        background: transparent;
+      }
+
+      .wrap {
+        display: grid;
+        gap: 0.6rem;
+      }
+
+      button {
+        width: 100%;
+        border: 0;
+        border-radius: 0.75rem;
+        padding: 0.75rem 1rem;
+        font-size: 1rem;
+        font-weight: 600;
+        cursor: pointer;
+        color: #ffffff;
+        background: #0f766e;
+      }
+
+      button.secondary {
+        background: #475569;
+      }
+
+      button:disabled {
+        cursor: wait;
+        opacity: 0.65;
+      }
+
+      .note {
+        color: #475569;
+        font-size: 0.9rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <button id="connectButton" type="button">Connect Visor</button>
+      <div class="note" id="note">Browser-side Bluetooth is idle.</div>
+    </div>
+
+    <script>
+      const connectButton = document.getElementById("connectButton");
+      const note = document.getElementById("note");
+
+      let renderData = {
+        serviceUuid: "",
+        characteristicUuid: "",
+        buttonLabel: "Connect Visor",
+      };
+
+      let currentDevice = null;
+      let currentServer = null;
+      let currentService = null;
+      let currentCharacteristic = null;
+      let isConnecting = false;
+
+      function sendMessageToStreamlit(type, data) {
+        window.parent.postMessage(
+          {
+            isStreamlitMessage: true,
+            type,
+            ...data,
+          },
+          "*",
+        );
+      }
+
+      function setComponentValue(value) {
+        sendMessageToStreamlit("streamlit:setComponentValue", { value });
+      }
+
+      function setFrameHeight(height) {
+        sendMessageToStreamlit("streamlit:setFrameHeight", { height });
+      }
+
+      function setComponentReady() {
+        sendMessageToStreamlit("streamlit:componentReady", { apiVersion: 1 });
+      }
+
+      function emitEvent(payload) {
+        setComponentValue({
+          eventId: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          ...payload,
+        });
+      }
+
+      function refreshUi() {
+        const connected =
+          currentDevice &&
+          currentDevice.gatt &&
+          currentDevice.gatt.connected &&
+          currentCharacteristic;
+
+        connectButton.disabled = isConnecting;
+        connectButton.textContent = connected ? "Disconnect Visor" : renderData.buttonLabel;
+        connectButton.className = connected ? "secondary" : "";
+
+        if (isConnecting) {
+          note.textContent = "Opening Bluetooth chooser...";
+        } else if (connected) {
+          note.textContent = `Connected to ${currentDevice.name || "visor"}.`;
+        } else {
+          note.textContent = "Browser-side Bluetooth is idle.";
+        }
+
+        setFrameHeight(document.body.scrollHeight);
+      }
+
+      function handleDisconnectEvent() {
+        currentServer = null;
+        currentService = null;
+        currentCharacteristic = null;
+        isConnecting = false;
+        refreshUi();
+        emitEvent({
+          status: "disconnected",
+          connected: false,
+          deviceName: currentDevice ? currentDevice.name || "Unknown visor" : null,
+          lastEvent: "Visor disconnected.",
+          error: null,
+        });
+      }
+
+      async function connectToVisor() {
+        if (!navigator.bluetooth) {
+          emitEvent({
+            status: "unsupported",
+            connected: false,
+            deviceName: null,
+            lastEvent: "Web Bluetooth is not available in this browser.",
+            error: "navigator.bluetooth is unavailable.",
+          });
+          return;
+        }
+
+        try {
+          isConnecting = true;
+          refreshUi();
+          emitEvent({
+            status: "connecting",
+            connected: false,
+            deviceName: null,
+            lastEvent: "Waiting for visor selection...",
+            error: null,
+          });
+
+          currentDevice = await navigator.bluetooth.requestDevice({
+            filters: [{ name: "SmartGolfVisor", services: [renderData.serviceUuid] }],
+          });
+
+          currentDevice.removeEventListener("gattserverdisconnected", handleDisconnectEvent);
+          currentDevice.addEventListener("gattserverdisconnected", handleDisconnectEvent);
+
+          currentServer = await currentDevice.gatt.connect();
+          currentService = await currentServer.getPrimaryService(renderData.serviceUuid);
+          currentCharacteristic = await currentService.getCharacteristic(renderData.characteristicUuid);
+
+          emitEvent({
+            status: "connected",
+            connected: true,
+            deviceName: currentDevice.name || "Unknown visor",
+            lastEvent: "Connected to visor and opened metrics characteristic.",
+            error: null,
+          });
+        } catch (error) {
+          currentDevice = null;
+          currentServer = null;
+          currentService = null;
+          currentCharacteristic = null;
+          emitEvent({
+            status: "error",
+            connected: false,
+            deviceName: currentDevice ? currentDevice.name || "Unknown visor" : null,
+            lastEvent: "Visor connection failed.",
+            error: error && error.message ? error.message : String(error),
+          });
+        } finally {
+          isConnecting = false;
+          refreshUi();
+        }
+      }
+
+      function disconnectFromVisor() {
+        if (currentDevice && currentDevice.gatt && currentDevice.gatt.connected) {
+          currentDevice.gatt.disconnect();
+        } else {
+          handleDisconnectEvent();
+        }
+      }
+
+      connectButton.addEventListener("click", async () => {
+        const connected =
+          currentDevice &&
+          currentDevice.gatt &&
+          currentDevice.gatt.connected &&
+          currentCharacteristic;
+
+        if (connected) {
+          disconnectFromVisor();
+          return;
+        }
+
+        await connectToVisor();
+      });
+
+      window.addEventListener("message", (event) => {
+        if (event.data.type !== "streamlit:render") {
+          return;
+        }
+
+        renderData = {
+          ...renderData,
+          ...(event.data.args || {}),
+        };
+
+        connectButton.textContent = renderData.buttonLabel;
+        refreshUi();
+      });
+
+      setComponentReady();
+      refreshUi();
+    </script>
+  </body>
+</html>

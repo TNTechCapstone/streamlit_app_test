@@ -1,46 +1,57 @@
 import random
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, List, Optional
 
 import streamlit as st
 
 from db import (
     create_session,
     end_session,
-    insert_shot,
-    upsert_insight_for_shot,
-    list_sessions,
     get_session_shots,
+    insert_shot,
+    list_sessions,
+    upsert_insight_for_shot,
 )
+from visor_component import visor_connector
 
 st.set_page_config(page_title="Smart Golf Visor", layout="centered")
+
+VISOR_SERVICE_UUID = "9a1b0001-6b4f-4f1c-9a12-1234567890ab"
+VISOR_CHARACTERISTIC_UUID = "9a1b0002-6b4f-4f1c-9a12-1234567890ab"
+
 
 # ----------------------------
 # Helpers (formatting)
 # ----------------------------
 def fmt_speed(mph: Optional[float]) -> str:
-    return "—" if mph is None else f"{mph:.1f} mph"
+    return "\u2014" if mph is None else f"{mph:.1f} mph"
+
 
 def fmt_carry(yards: Optional[float]) -> str:
     # carry: no decimal precision
-    return "—" if yards is None else f"{int(round(yards))} yd"
+    return "\u2014" if yards is None else f"{int(round(yards))} yd"
+
 
 def fmt_launch(deg: Optional[float]) -> str:
     # launch angle: 1 decimal
-    return "—" if deg is None else f"{deg:.1f}°"
+    return "\u2014" if deg is None else f"{deg:.1f}\N{DEGREE SIGN}"
+
 
 def fmt_side(deg: Optional[float]) -> str:
-    return "—" if deg is None else f"{deg:.1f}°"
+    return "\u2014" if deg is None else f"{deg:.1f}\N{DEGREE SIGN}"
+
 
 def fmt_rpm(rpm: Optional[float]) -> str:
-    return "—" if rpm is None else f"{int(round(rpm))} rpm"
+    return "\u2014" if rpm is None else f"{int(round(rpm))} rpm"
+
 
 def now_iso_z() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
+
 def dt_to_iso_z(dt_val: Any) -> str:
     if dt_val is None:
-        return "—"
+        return "\u2014"
     if isinstance(dt_val, str):
         return dt_val
     if isinstance(dt_val, datetime):
@@ -48,6 +59,7 @@ def dt_to_iso_z(dt_val: Any) -> str:
             dt_val = dt_val.replace(tzinfo=timezone.utc)
         return dt_val.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     return str(dt_val)
+
 
 def safe_float(x: Any) -> Optional[float]:
     try:
@@ -57,28 +69,111 @@ def safe_float(x: Any) -> Optional[float]:
     except Exception:
         return None
 
+
+def init_visor_state() -> None:
+    defaults = {
+        "visor_status": "Not connected",
+        "visor_device_name": None,
+        "visor_last_event": "No visor connected yet.",
+        "visor_connected": False,
+        "visor_error": None,
+        "visor_last_event_id": None,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def apply_visor_event(event: Dict[str, Any]) -> None:
+    status = str(event.get("status") or "unknown")
+    event_id = event.get("eventId")
+    if event_id and event_id == st.session_state.visor_last_event_id:
+        return
+
+    st.session_state.visor_last_event_id = event_id
+    st.session_state.visor_device_name = event.get("deviceName") or None
+    st.session_state.visor_error = event.get("error") or None
+    st.session_state.visor_last_event = event.get("lastEvent") or "Visor status updated."
+
+    if status == "connected":
+        st.session_state.visor_connected = True
+        st.session_state.visor_status = "Connected"
+    elif status == "connecting":
+        st.session_state.visor_connected = False
+        st.session_state.visor_status = "Connecting"
+    elif status == "unsupported":
+        st.session_state.visor_connected = False
+        st.session_state.visor_status = "Web Bluetooth unavailable"
+    elif status == "error":
+        st.session_state.visor_connected = False
+        st.session_state.visor_status = "Connection error"
+    else:
+        st.session_state.visor_connected = False
+        st.session_state.visor_status = "Disconnected"
+
+
+def render_visor_section() -> None:
+    st.subheader("Visor Connection")
+    st.caption("Use a Chromium-based browser on HTTPS or localhost to pair with the ESP32 visor.")
+
+    visor_event = visor_connector(
+        service_uuid=VISOR_SERVICE_UUID,
+        characteristic_uuid=VISOR_CHARACTERISTIC_UUID,
+        button_label="Connect Visor",
+        key="visor-connector",
+    )
+    if visor_event:
+        apply_visor_event(visor_event)
+
+    if st.session_state.visor_connected:
+        device_label = st.session_state.visor_device_name or "Unknown visor"
+        st.success(f"Connected to {device_label}.")
+    elif st.session_state.visor_status == "Connection error":
+        st.error(st.session_state.visor_error or "Unable to connect to the visor.")
+    elif st.session_state.visor_status == "Web Bluetooth unavailable":
+        st.warning("Web Bluetooth is not available in this browser.")
+    elif st.session_state.visor_status == "Connecting":
+        st.info("Connecting to visor...")
+    else:
+        st.info("Visor is not connected.")
+
+    status_rows = [
+        {
+            "Status": st.session_state.visor_status,
+            "Device": st.session_state.visor_device_name or "\u2014",
+            "Last Event": st.session_state.visor_last_event,
+        }
+    ]
+    st.dataframe(status_rows, use_container_width=True, hide_index=True)
+
+    if st.session_state.visor_connected:
+        st.caption("The BLE link is ready for the next phase: sending a test-shot packet to the visor.")
+    else:
+        st.caption("Pair the visor here first. Shot transmission will be added in the next step.")
+
+
 # ----------------------------
 # Mock shot generator (schema-aligned)
 # ----------------------------
 def generate_mock_shot() -> Dict[str, Any]:
-    speed = random.uniform(90.0, 165.0)          # mph
-    launch_angle = random.uniform(8.0, 20.0)     # degrees
-    side_angle = random.uniform(-6.0, 6.0)       # degrees
-    backspin = random.uniform(1800.0, 4200.0)    # rpm
-    sidespin = random.uniform(-900.0, 900.0)     # rpm
-    carry = random.uniform(140.0, 290.0)         # yards
+    speed = random.uniform(90.0, 165.0)  # mph
+    launch_angle = random.uniform(8.0, 20.0)  # degrees
+    side_angle = random.uniform(-6.0, 6.0)  # degrees
+    backspin = random.uniform(1800.0, 4200.0)  # rpm
+    sidespin = random.uniform(-900.0, 900.0)  # rpm
+    carry = random.uniform(140.0, 290.0)  # yards
 
     if launch_angle < 10.0:
-        insight = "Low launch — consider tee height or adding loft."
+        insight = "Low launch \u2014 consider tee height or adding loft."
         rule_id, severity = "low_launch", 2
     elif backspin > 3800.0:
-        insight = "High backspin — check strike location and dynamic loft."
+        insight = "High backspin \u2014 check strike location and dynamic loft."
         rule_id, severity = "high_backspin", 2
     elif abs(side_angle) > 4.0:
-        insight = "Large side angle — face/path mismatch; work on start line control."
+        insight = "Large side angle \u2014 face/path mismatch; work on start line control."
         rule_id, severity = "large_side_angle", 1
     else:
-        insight = "Solid shot — keep repeating that swing."
+        insight = "Solid shot \u2014 keep repeating that swing."
         rule_id, severity = "good_shot", 0
 
     return {
@@ -91,6 +186,7 @@ def generate_mock_shot() -> Dict[str, Any]:
         "carry": carry,
         "_insight": {"message": insight, "rule_id": rule_id, "severity": severity},
     }
+
 
 # ----------------------------
 # Session State Initialization
@@ -107,35 +203,40 @@ if "shots" not in st.session_state:
 if "history_selected_session_id" not in st.session_state:
     st.session_state.history_selected_session_id = None  # chosen session in history view
 
+init_visor_state()
+
+
 # ----------------------------
 # Resume helpers
 # ----------------------------
 def find_latest_open_session_id() -> Optional[str]:
     sessions = list_sessions(limit=50, user_id=None)
-    for s in sessions:
-        if s.get("ended_at") is None:
-            return str(s.get("session_id"))
+    for session_row in sessions:
+        if session_row.get("ended_at") is None:
+            return str(session_row.get("session_id"))
     return None
+
 
 def load_session_into_ui(session_id: str) -> None:
     rows = get_session_shots(session_id)
     shots_ui: List[Dict[str, Any]] = []
-    for r in rows:
+    for row in rows:
         shots_ui.append(
             {
-                "timestamp": dt_to_iso_z(r.get("ts")),
-                "speed": safe_float(r.get("speed")),
-                "launch_angle": safe_float(r.get("launch_angle")),
-                "side_angle": safe_float(r.get("side_angle")),
-                "backspin": safe_float(r.get("backspin")),
-                "sidespin": safe_float(r.get("sidespin")),
-                "carry": safe_float(r.get("carry")),
-                "_insight": {"message": r.get("insight") or "", "rule_id": None, "severity": None},
+                "timestamp": dt_to_iso_z(row.get("ts")),
+                "speed": safe_float(row.get("speed")),
+                "launch_angle": safe_float(row.get("launch_angle")),
+                "side_angle": safe_float(row.get("side_angle")),
+                "backspin": safe_float(row.get("backspin")),
+                "sidespin": safe_float(row.get("sidespin")),
+                "carry": safe_float(row.get("carry")),
+                "_insight": {"message": row.get("insight") or "", "rule_id": None, "severity": None},
             }
         )
     st.session_state.session_id = session_id
     st.session_state.shots = shots_ui
     st.session_state.view = "session"
+
 
 # ----------------------------
 # UI: Home Screen
@@ -144,7 +245,8 @@ def render_home() -> None:
     st.title("Smart Golf Visor")
     st.caption("Prototype UI")
 
-    st.markdown("")
+    render_visor_section()
+    st.divider()
 
     if st.button("Start Session", type="primary", use_container_width=True):
         session_id = create_session(user_id=None)
@@ -186,6 +288,7 @@ def render_home() -> None:
         st.session_state.view = "history"
         st.rerun()
 
+
 # ----------------------------
 # UI: Current Session Screen
 # ----------------------------
@@ -196,7 +299,7 @@ def render_session() -> None:
     st.divider()
 
     if len(st.session_state.shots) == 0:
-        st.info("Waiting for shot data… (use Generate Test Shot for now)")
+        st.info("Waiting for shot data\u2026 (use Generate Test Shot for now)")
 
         col_a, col_b = st.columns(2)
         with col_a:
@@ -247,7 +350,7 @@ def render_session() -> None:
     c5.metric("Backspin", fmt_rpm(shot.get("backspin")))
     c6.metric("Sidespin", fmt_rpm(shot.get("sidespin")))
 
-    st.markdown(f"**Last update:** {shot.get('timestamp', '—')}")
+    st.markdown(f"**Last update:** {shot.get('timestamp', '\u2014')}")
     if shot.get("_insight", {}).get("message"):
         st.success(f"**Insight:** {shot['_insight']['message']}")
 
@@ -298,20 +401,21 @@ def render_session() -> None:
         st.dataframe(
             [
                 {
-                    "timestamp": s.get("timestamp"),
-                    "speed_mph": round(float(s["speed"]), 1),
-                    "carry_yd": int(round(float(s["carry"]))),
-                    "launch_deg": round(float(s["launch_angle"]), 1),
-                    "side_deg": round(float(s["side_angle"]), 1),
-                    "backspin_rpm": int(round(float(s["backspin"]))),
-                    "sidespin_rpm": int(round(float(s["sidespin"]))),
-                    "insight": s.get("_insight", {}).get("message", ""),
+                    "timestamp": shot_row.get("timestamp"),
+                    "speed_mph": round(float(shot_row["speed"]), 1),
+                    "carry_yd": int(round(float(shot_row["carry"]))),
+                    "launch_deg": round(float(shot_row["launch_angle"]), 1),
+                    "side_deg": round(float(shot_row["side_angle"]), 1),
+                    "backspin_rpm": int(round(float(shot_row["backspin"]))),
+                    "sidespin_rpm": int(round(float(shot_row["sidespin"]))),
+                    "insight": shot_row.get("_insight", {}).get("message", ""),
                 }
-                for s in reversed(st.session_state.shots[-10:])
+                for shot_row in reversed(st.session_state.shots[-10:])
             ],
             use_container_width=True,
             hide_index=True,
         )
+
 
 # ----------------------------
 # UI: History Screen
@@ -321,7 +425,7 @@ def render_history() -> None:
 
     col_top_a, col_top_b = st.columns([1, 1])
     with col_top_a:
-        if st.button("← Back to Home", use_container_width=True):
+        if st.button("\u2190 Back to Home", use_container_width=True):
             st.session_state.view = "home"
             st.rerun()
     with col_top_b:
@@ -343,22 +447,22 @@ def render_history() -> None:
     options: List[str] = []
     label_to_id: Dict[str, str] = {}
 
-    for s in sessions:
-        sid = str(s.get("session_id"))
-        started = dt_to_iso_z(s.get("started_at"))
-        ended = s.get("ended_at")
+    for session_row in sessions:
+        sid = str(session_row.get("session_id"))
+        started = dt_to_iso_z(session_row.get("started_at"))
+        ended = session_row.get("ended_at")
         status = "ACTIVE" if ended is None else "ENDED"
-        nshots = s.get("num_shots", 0)
-        label = f"{started} • {status} • {nshots} shots • {sid[:8]}"
+        nshots = session_row.get("num_shots", 0)
+        label = f"{started} \u2022 {status} \u2022 {nshots} shots \u2022 {sid[:8]}"
         options.append(label)
         label_to_id[label] = sid
 
     default_index = 0
     if st.session_state.history_selected_session_id:
         # Try to keep selection stable
-        for i, lab in enumerate(options):
-            if label_to_id[lab] == st.session_state.history_selected_session_id:
-                default_index = i
+        for index, label in enumerate(options):
+            if label_to_id[label] == st.session_state.history_selected_session_id:
+                default_index = index
                 break
 
     selected_label = st.selectbox(
@@ -387,20 +491,21 @@ def render_history() -> None:
     st.dataframe(
         [
             {
-                "timestamp": dt_to_iso_z(r.get("ts")),
-                "speed_mph": None if r.get("speed") is None else round(float(r.get("speed")), 1),
-                "carry_yd": None if r.get("carry") is None else int(round(float(r.get("carry")))),
-                "launch_deg": None if r.get("launch_angle") is None else round(float(r.get("launch_angle")), 1),
-                "side_deg": None if r.get("side_angle") is None else round(float(r.get("side_angle")), 1),
-                "backspin_rpm": None if r.get("backspin") is None else int(round(float(r.get("backspin")))),
-                "sidespin_rpm": None if r.get("sidespin") is None else int(round(float(r.get("sidespin")))),
-                "insight": r.get("insight") or "",
+                "timestamp": dt_to_iso_z(row.get("ts")),
+                "speed_mph": None if row.get("speed") is None else round(float(row.get("speed")), 1),
+                "carry_yd": None if row.get("carry") is None else int(round(float(row.get("carry")))),
+                "launch_deg": None if row.get("launch_angle") is None else round(float(row.get("launch_angle")), 1),
+                "side_deg": None if row.get("side_angle") is None else round(float(row.get("side_angle")), 1),
+                "backspin_rpm": None if row.get("backspin") is None else int(round(float(row.get("backspin")))),
+                "sidespin_rpm": None if row.get("sidespin") is None else int(round(float(row.get("sidespin")))),
+                "insight": row.get("insight") or "",
             }
-            for r in rows
+            for row in rows
         ],
         use_container_width=True,
         hide_index=True,
     )
+
 
 # ----------------------------
 # Router
