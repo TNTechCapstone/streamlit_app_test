@@ -15,12 +15,16 @@ def visor_connector(
     service_uuid: str,
     characteristic_uuid: str,
     button_label: str = "Connect Visor",
+    pending_write_token: Optional[str] = None,
+    shot_payload: Optional[list[int]] = None,
     key: str = "visor-connector",
 ) -> Optional[Dict[str, Any]]:
     return _visor_connector_component(
         serviceUuid=service_uuid,
         characteristicUuid=characteristic_uuid,
         buttonLabel=button_label,
+        pendingWriteToken=pending_write_token,
+        shotPayload=shot_payload,
         default=None,
         key=key,
     )

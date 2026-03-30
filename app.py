@@ -1,4 +1,5 @@
 import random
+import struct
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -78,6 +79,9 @@ def init_visor_state() -> None:
         "visor_connected": False,
         "visor_error": None,
         "visor_last_event_id": None,
+        "visor_last_send_status": "No shot sent yet.",
+        "visor_pending_write_token": None,
+        "visor_pending_payload": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -87,6 +91,7 @@ def init_visor_state() -> None:
 def apply_visor_event(event: Dict[str, Any]) -> None:
     status = str(event.get("status") or "unknown")
     event_id = event.get("eventId")
+    connected = bool(event.get("connected"))
     if event_id and event_id == st.session_state.visor_last_event_id:
         return
 
@@ -105,21 +110,50 @@ def apply_visor_event(event: Dict[str, Any]) -> None:
         st.session_state.visor_connected = False
         st.session_state.visor_status = "Web Bluetooth unavailable"
     elif status == "error":
-        st.session_state.visor_connected = False
+        st.session_state.visor_connected = connected
         st.session_state.visor_status = "Connection error"
+        st.session_state.visor_last_send_status = event.get("error") or "Visor communication error."
+    elif status == "sent":
+        st.session_state.visor_connected = True
+        st.session_state.visor_status = "Connected"
+        st.session_state.visor_last_send_status = event.get("lastEvent") or "Shot sent to visor."
+        st.session_state.visor_pending_write_token = None
+        st.session_state.visor_pending_payload = None
     else:
         st.session_state.visor_connected = False
         st.session_state.visor_status = "Disconnected"
 
 
-def render_visor_section() -> None:
+def encode_shot_for_visor(shot: Dict[str, Any]) -> List[int]:
+    payload = struct.pack(
+        "<HhhHHh",
+        int(round(float(shot["speed"]) * 10.0)),
+        int(round(float(shot["launch_angle"]) * 10.0)),
+        int(round(float(shot["side_angle"]) * 10.0)),
+        int(round(float(shot["carry"]))),
+        int(round(float(shot["backspin"]))),
+        int(round(float(shot["sidespin"]))),
+    )
+    return list(payload)
+
+
+def queue_shot_for_visor(shot: Dict[str, Any]) -> None:
+    st.session_state.visor_pending_payload = encode_shot_for_visor(shot)
+    st.session_state.visor_pending_write_token = now_iso_z()
+    st.session_state.visor_last_send_status = "Queued latest shot for visor delivery."
+
+
+def render_visor_section(compact: bool = False) -> None:
     st.subheader("Visor Connection")
-    st.caption("Use a Chromium-based browser on HTTPS or localhost to pair with the ESP32 visor.")
+    if not compact:
+        st.caption("Use a Chromium-based browser on HTTPS or localhost to pair with the ESP32 visor.")
 
     visor_event = visor_connector(
         service_uuid=VISOR_SERVICE_UUID,
         characteristic_uuid=VISOR_CHARACTERISTIC_UUID,
         button_label="Connect Visor",
+        pending_write_token=st.session_state.visor_pending_write_token,
+        shot_payload=st.session_state.visor_pending_payload,
         key="visor-connector",
     )
     if visor_event:
@@ -142,14 +176,15 @@ def render_visor_section() -> None:
             "Status": st.session_state.visor_status,
             "Device": st.session_state.visor_device_name or "\u2014",
             "Last Event": st.session_state.visor_last_event,
+            "Last Send": st.session_state.visor_last_send_status,
         }
     ]
     st.dataframe(status_rows, use_container_width=True, hide_index=True)
 
     if st.session_state.visor_connected:
-        st.caption("The BLE link is ready for the next phase: sending a test-shot packet to the visor.")
+        st.caption("The BLE link is active. New test shots will be sent to the visor automatically.")
     else:
-        st.caption("Pair the visor here first. Shot transmission will be added in the next step.")
+        st.caption("Pair the visor here first. Generated test shots only send while the visor is connected.")
 
 
 # ----------------------------
@@ -296,6 +331,7 @@ def render_session() -> None:
     st.title("Current Session")
     st.caption(f"Session ID: {st.session_state.session_id}")
 
+    render_visor_section(compact=True)
     st.divider()
 
     if len(st.session_state.shots) == 0:
@@ -327,6 +363,10 @@ def render_session() -> None:
                 )
 
                 st.session_state.shots.append(shot)
+                if st.session_state.visor_connected:
+                    queue_shot_for_visor(shot)
+                else:
+                    st.session_state.visor_last_send_status = "Shot saved, but visor is not connected."
                 st.rerun()
 
         with col_b:
@@ -382,6 +422,10 @@ def render_session() -> None:
             )
 
             st.session_state.shots.append(shot)
+            if st.session_state.visor_connected:
+                queue_shot_for_visor(shot)
+            else:
+                st.session_state.visor_last_send_status = "Shot saved, but visor is not connected."
             st.rerun()
 
     with col2:
