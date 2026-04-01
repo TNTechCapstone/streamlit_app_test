@@ -372,7 +372,7 @@ def render_pi_status(compact: bool = False) -> None:
 
 def render_connection_hub() -> None:
     st.title("Device Connections")
-    st.caption("These Bluetooth components stay mounted across app views so active BLE sessions are less likely to drop during navigation.")
+    st.caption("Connect Smart Visor and PiTrac devices below. Ensure that your browser has permission to connect with nearby devices via BLE.")
     render_visor_status(compact=True)
     mount_visor_connector()
     st.markdown("")
