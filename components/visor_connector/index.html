@@ -61,6 +61,8 @@
         serviceUuid: "",
         characteristicUuid: "",
         buttonLabel: "Connect Visor",
+        expectedDeviceName: null,
+        enableNotifications: false,
         pendingWriteToken: null,
         shotPayload: null,
       };
@@ -71,6 +73,7 @@
       let currentCharacteristic = null;
       let isConnecting = false;
       let lastProcessedWriteToken = null;
+      const textDecoder = new TextDecoder("utf-8");
 
       function sendMessageToStreamlit(type, data) {
         window.parent.postMessage(
@@ -116,7 +119,7 @@
         if (isConnecting) {
           note.textContent = "Opening Bluetooth chooser...";
         } else if (connected) {
-          note.textContent = `Connected to ${currentDevice.name || "visor"}.`;
+          note.textContent = `Connected to ${currentDevice.name || "device"}.`;
         } else {
           note.textContent = "Browser-side Bluetooth is idle.";
         }
@@ -133,10 +136,36 @@
         emitEvent({
           status: "disconnected",
           connected: false,
-          deviceName: currentDevice ? currentDevice.name || "Unknown visor" : null,
-          lastEvent: "Visor disconnected.",
+          deviceName: currentDevice ? currentDevice.name || "Unknown device" : null,
+          lastEvent: "BLE device disconnected.",
           error: null,
         });
+      }
+
+      function handleCharacteristicValueChanged(event) {
+        try {
+          const view = event.target.value;
+          const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+          const text = textDecoder.decode(bytes);
+          const shotData = JSON.parse(text);
+
+          emitEvent({
+            status: "notification",
+            connected: true,
+            deviceName: currentDevice ? currentDevice.name || "Unknown device" : null,
+            lastEvent: "Received shot notification from Pi.",
+            shotData,
+            error: null,
+          });
+        } catch (error) {
+          emitEvent({
+            status: "error",
+            connected: !!(currentDevice && currentDevice.gatt && currentDevice.gatt.connected),
+            deviceName: currentDevice ? currentDevice.name || "Unknown device" : null,
+            lastEvent: "Failed to decode shot notification.",
+            error: error && error.message ? error.message : String(error),
+          });
+        }
       }
 
       async function writeShotPayload() {
@@ -148,9 +177,9 @@
           emitEvent({
             status: "error",
             connected: false,
-            deviceName: currentDevice ? currentDevice.name || "Unknown visor" : null,
-            lastEvent: "Shot send failed because the visor is not connected.",
-            error: "No active visor connection is available for writing.",
+            deviceName: currentDevice ? currentDevice.name || "Unknown device" : null,
+            lastEvent: "Shot send failed because the BLE device is not connected.",
+            error: "No active BLE connection is available for writing.",
           });
           return;
         }
@@ -170,15 +199,15 @@
           emitEvent({
             status: "sent",
             connected: true,
-            deviceName: currentDevice.name || "Unknown visor",
-            lastEvent: `Sent ${data.length} shot bytes to visor.`,
+            deviceName: currentDevice.name || "Unknown device",
+            lastEvent: `Sent ${data.length} shot bytes to BLE device.`,
             error: null,
           });
         } catch (error) {
           emitEvent({
             status: "error",
             connected: !!(currentDevice && currentDevice.gatt && currentDevice.gatt.connected),
-            deviceName: currentDevice ? currentDevice.name || "Unknown visor" : null,
+            deviceName: currentDevice ? currentDevice.name || "Unknown device" : null,
             lastEvent: "Shot send failed during BLE write.",
             error: error && error.message ? error.message : String(error),
           });
@@ -208,9 +237,11 @@
             error: null,
           });
 
-          currentDevice = await navigator.bluetooth.requestDevice({
-            filters: [{ name: "SmartGolfVisor", services: [renderData.serviceUuid] }],
-          });
+          const filters = renderData.expectedDeviceName
+            ? [{ name: renderData.expectedDeviceName, services: [renderData.serviceUuid] }]
+            : [{ services: [renderData.serviceUuid] }];
+
+          currentDevice = await navigator.bluetooth.requestDevice({ filters });
 
           currentDevice.removeEventListener("gattserverdisconnected", handleDisconnectEvent);
           currentDevice.addEventListener("gattserverdisconnected", handleDisconnectEvent);
@@ -219,11 +250,19 @@
           currentService = await currentServer.getPrimaryService(renderData.serviceUuid);
           currentCharacteristic = await currentService.getCharacteristic(renderData.characteristicUuid);
 
+          if (renderData.enableNotifications) {
+            currentCharacteristic.removeEventListener("characteristicvaluechanged", handleCharacteristicValueChanged);
+            currentCharacteristic.addEventListener("characteristicvaluechanged", handleCharacteristicValueChanged);
+            await currentCharacteristic.startNotifications();
+          }
+
           emitEvent({
             status: "connected",
             connected: true,
-            deviceName: currentDevice.name || "Unknown visor",
-            lastEvent: "Connected to visor and opened metrics characteristic.",
+            deviceName: currentDevice.name || "Unknown device",
+            lastEvent: renderData.enableNotifications
+              ? "Connected and subscribed to shot notifications."
+              : "Connected and opened BLE characteristic.",
             error: null,
           });
         } catch (error) {
@@ -234,8 +273,8 @@
           emitEvent({
             status: "error",
             connected: false,
-            deviceName: currentDevice ? currentDevice.name || "Unknown visor" : null,
-            lastEvent: "Visor connection failed.",
+            deviceName: currentDevice ? currentDevice.name || "Unknown device" : null,
+            lastEvent: "BLE connection failed.",
             error: error && error.message ? error.message : String(error),
           });
         } finally {

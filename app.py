@@ -19,6 +19,8 @@ st.set_page_config(page_title="Smart Golf Visor", layout="centered")
 
 VISOR_SERVICE_UUID = "9a1b0001-6b4f-4f1c-9a12-1234567890ab"
 VISOR_CHARACTERISTIC_UUID = "9a1b0002-6b4f-4f1c-9a12-1234567890ab"
+PI_SERVICE_UUID = "b31072c3-27e7-4da5-95f3-6b59b4a38c61"
+PI_CHARACTERISTIC_UUID = "7fc6f4b6-f4e6-4c65-8889-69e0b9bf9a17"
 
 
 # ----------------------------
@@ -88,6 +90,95 @@ def init_visor_state() -> None:
             st.session_state[key] = value
 
 
+def init_pi_state() -> None:
+    defaults = {
+        "pi_status": "Not connected",
+        "pi_device_name": None,
+        "pi_last_event": "No Pi connected yet.",
+        "pi_connected": False,
+        "pi_error": None,
+        "pi_last_event_id": None,
+        "pi_last_shot_timestamp": None,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def build_shot_insight(
+    launch_angle: Optional[float],
+    side_angle: Optional[float],
+    backspin: Optional[float],
+    coach_advice: Optional[Any] = None,
+) -> Dict[str, Any]:
+    advice_text = None if coach_advice in (None, "", 0) else str(coach_advice)
+    if advice_text:
+        return {"message": advice_text, "rule_id": "coach_advice", "severity": 1}
+    if launch_angle is not None and launch_angle < 10.0:
+        return {"message": "Low launch — consider tee height or adding loft.", "rule_id": "low_launch", "severity": 2}
+    if backspin is not None and backspin > 3800.0:
+        return {
+            "message": "High backspin — check strike location and dynamic loft.",
+            "rule_id": "high_backspin",
+            "severity": 2,
+        }
+    if side_angle is not None and abs(side_angle) > 4.0:
+        return {
+            "message": "Large side angle — face/path mismatch; work on start line control.",
+            "rule_id": "large_side_angle",
+            "severity": 1,
+        }
+    return {"message": "Solid shot — keep repeating that swing.", "rule_id": "good_shot", "severity": 0}
+
+
+def build_pi_shot(raw_shot: Dict[str, Any]) -> Dict[str, Any]:
+    launch_angle = safe_float(raw_shot.get("la"))
+    side_angle = safe_float(raw_shot.get("sa"))
+    backspin = safe_float(raw_shot.get("bs"))
+    shot = {
+        "timestamp": now_iso_z(),
+        "speed": safe_float(raw_shot.get("s")),
+        "launch_angle": launch_angle,
+        "side_angle": side_angle,
+        "backspin": backspin,
+        "sidespin": safe_float(raw_shot.get("ss")),
+        "carry": safe_float(raw_shot.get("d")),
+        "_insight": build_shot_insight(launch_angle, side_angle, backspin, raw_shot.get("ca")),
+    }
+    return shot
+
+
+def ensure_active_session() -> None:
+    if st.session_state.session_id:
+        return
+    st.session_state.session_id = create_session(user_id=None)
+    st.session_state.shots = []
+    st.session_state.view = "session"
+
+
+def persist_shot_to_current_session(shot: Dict[str, Any]) -> None:
+    ensure_active_session()
+    shot_id = insert_shot(
+        st.session_state.session_id,
+        {
+            "speed": shot["speed"],
+            "launch_angle": shot["launch_angle"],
+            "side_angle": shot["side_angle"],
+            "backspin": shot["backspin"],
+            "sidespin": shot["sidespin"],
+            "carry": shot["carry"],
+            "timestamp": shot["timestamp"],
+        },
+    )
+    upsert_insight_for_shot(
+        shot_id=shot_id,
+        message=shot["_insight"]["message"],
+        rule_id=shot["_insight"]["rule_id"],
+        severity=shot["_insight"]["severity"],
+    )
+    st.session_state.shots.append(shot)
+
+
 def apply_visor_event(event: Dict[str, Any]) -> None:
     status = str(event.get("status") or "unknown")
     event_id = event.get("eventId")
@@ -124,6 +215,49 @@ def apply_visor_event(event: Dict[str, Any]) -> None:
         st.session_state.visor_status = "Disconnected"
 
 
+def apply_pi_event(event: Dict[str, Any]) -> None:
+    status = str(event.get("status") or "unknown")
+    event_id = event.get("eventId")
+    connected = bool(event.get("connected"))
+    if event_id and event_id == st.session_state.pi_last_event_id:
+        return
+
+    st.session_state.pi_last_event_id = event_id
+    st.session_state.pi_device_name = event.get("deviceName") or None
+    st.session_state.pi_error = event.get("error") or None
+    st.session_state.pi_last_event = event.get("lastEvent") or "Pi status updated."
+
+    if status == "connected":
+        st.session_state.pi_connected = True
+        st.session_state.pi_status = "Connected"
+        return
+    if status == "connecting":
+        st.session_state.pi_connected = False
+        st.session_state.pi_status = "Connecting"
+        return
+    if status == "unsupported":
+        st.session_state.pi_connected = False
+        st.session_state.pi_status = "Web Bluetooth unavailable"
+        return
+    if status == "error":
+        st.session_state.pi_connected = connected
+        st.session_state.pi_status = "Connection error"
+        return
+    if status == "notification":
+        st.session_state.pi_connected = True
+        st.session_state.pi_status = "Connected"
+        shot_data = event.get("shotData")
+        if isinstance(shot_data, dict):
+            shot = build_pi_shot(shot_data)
+            persist_shot_to_current_session(shot)
+            st.session_state.pi_last_shot_timestamp = shot["timestamp"]
+            st.rerun()
+        return
+
+    st.session_state.pi_connected = False
+    st.session_state.pi_status = "Disconnected"
+
+
 def encode_shot_for_visor(shot: Dict[str, Any]) -> List[int]:
     payload = struct.pack(
         "<HhhHHh",
@@ -152,6 +286,7 @@ def render_visor_section(compact: bool = False) -> None:
         service_uuid=VISOR_SERVICE_UUID,
         characteristic_uuid=VISOR_CHARACTERISTIC_UUID,
         button_label="Connect Visor",
+        expected_device_name="SmartGolfVisor",
         pending_write_token=st.session_state.visor_pending_write_token,
         shot_payload=st.session_state.visor_pending_payload,
         key="visor-connector",
@@ -185,6 +320,50 @@ def render_visor_section(compact: bool = False) -> None:
         st.caption("The BLE link is active. New test shots will be sent to the visor automatically.")
     else:
         st.caption("Pair the visor here first. Generated test shots only send while the visor is connected.")
+
+
+def render_pi_section(compact: bool = False) -> None:
+    st.subheader("Pi Connection")
+    if not compact:
+        st.caption("Connect to the Raspberry Pi BLE service to receive live shot notifications from PiTrac.")
+
+    pi_event = visor_connector(
+        service_uuid=PI_SERVICE_UUID,
+        characteristic_uuid=PI_CHARACTERISTIC_UUID,
+        button_label="Connect Pi",
+        expected_device_name="PiTrac",
+        enable_notifications=True,
+        key="pi-connector",
+    )
+    if pi_event:
+        apply_pi_event(pi_event)
+
+    if st.session_state.pi_connected:
+        device_label = st.session_state.pi_device_name or "Unknown Pi"
+        st.success(f"Connected to {device_label}.")
+    elif st.session_state.pi_status == "Connection error":
+        st.error(st.session_state.pi_error or "Unable to connect to the Raspberry Pi.")
+    elif st.session_state.pi_status == "Web Bluetooth unavailable":
+        st.warning("Web Bluetooth is not available in this browser.")
+    elif st.session_state.pi_status == "Connecting":
+        st.info("Connecting to Raspberry Pi...")
+    else:
+        st.info("Pi is not connected.")
+
+    status_rows = [
+        {
+            "Status": st.session_state.pi_status,
+            "Device": st.session_state.pi_device_name or "—",
+            "Last Event": st.session_state.pi_last_event,
+            "Last Shot": st.session_state.pi_last_shot_timestamp or "—",
+        }
+    ]
+    st.dataframe(status_rows, use_container_width=True, hide_index=True)
+
+    if st.session_state.pi_connected:
+        st.caption("Live Pi notifications are enabled. Incoming shots will be stored and shown in the active session.")
+    else:
+        st.caption("Connect the Pi here to receive shot notifications from its BLE characteristic.")
 
 
 # ----------------------------
@@ -239,6 +418,7 @@ if "history_selected_session_id" not in st.session_state:
     st.session_state.history_selected_session_id = None  # chosen session in history view
 
 init_visor_state()
+init_pi_state()
 
 
 # ----------------------------
@@ -281,6 +461,8 @@ def render_home() -> None:
     st.caption("Prototype UI")
 
     render_visor_section()
+    st.markdown("")
+    render_pi_section()
     st.divider()
 
     if st.button("Start Session", type="primary", use_container_width=True):
@@ -331,6 +513,8 @@ def render_session() -> None:
     st.title("Current Session")
     st.caption(f"Session ID: {st.session_state.session_id}")
 
+    render_pi_section(compact=True)
+    st.markdown("")
     render_visor_section(compact=True)
     st.divider()
 
@@ -341,28 +525,7 @@ def render_session() -> None:
         with col_a:
             if st.button("Generate Test Shot", use_container_width=True):
                 shot = generate_mock_shot()
-
-                shot_id = insert_shot(
-                    st.session_state.session_id,
-                    {
-                        "speed": shot["speed"],
-                        "launch_angle": shot["launch_angle"],
-                        "side_angle": shot["side_angle"],
-                        "backspin": shot["backspin"],
-                        "sidespin": shot["sidespin"],
-                        "carry": shot["carry"],
-                        "timestamp": shot["timestamp"],
-                    },
-                )
-
-                upsert_insight_for_shot(
-                    shot_id=shot_id,
-                    message=shot["_insight"]["message"],
-                    rule_id=shot["_insight"]["rule_id"],
-                    severity=shot["_insight"]["severity"],
-                )
-
-                st.session_state.shots.append(shot)
+                persist_shot_to_current_session(shot)
                 if st.session_state.visor_connected:
                     queue_shot_for_visor(shot)
                 else:
@@ -400,28 +563,7 @@ def render_session() -> None:
     with col1:
         if st.button("Generate Test Shot", use_container_width=True):
             shot = generate_mock_shot()
-
-            shot_id = insert_shot(
-                st.session_state.session_id,
-                {
-                    "speed": shot["speed"],
-                    "launch_angle": shot["launch_angle"],
-                    "side_angle": shot["side_angle"],
-                    "backspin": shot["backspin"],
-                    "sidespin": shot["sidespin"],
-                    "carry": shot["carry"],
-                    "timestamp": shot["timestamp"],
-                },
-            )
-
-            upsert_insight_for_shot(
-                shot_id=shot_id,
-                message=shot["_insight"]["message"],
-                rule_id=shot["_insight"]["rule_id"],
-                severity=shot["_insight"]["severity"],
-            )
-
-            st.session_state.shots.append(shot)
+            persist_shot_to_current_session(shot)
             if st.session_state.visor_connected:
                 queue_shot_for_visor(shot)
             else:
@@ -466,6 +608,11 @@ def render_session() -> None:
 # ----------------------------
 def render_history() -> None:
     st.title("Session History")
+
+    render_pi_section(compact=True)
+    st.markdown("")
+    render_visor_section(compact=True)
+    st.divider()
 
     col_top_a, col_top_b = st.columns([1, 1])
     with col_top_a:
