@@ -251,6 +251,10 @@ def apply_pi_event(event: Dict[str, Any]) -> None:
             shot = build_pi_shot(shot_data)
             persist_shot_to_current_session(shot)
             st.session_state.pi_last_shot_timestamp = shot["timestamp"]
+            if st.session_state.visor_connected:
+                queue_shot_for_visor(shot)
+            else:
+                st.session_state.visor_last_send_status = "Pi shot saved, but visor is not connected."
             st.rerun()
         return
 
