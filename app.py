@@ -277,11 +277,7 @@ def queue_shot_for_visor(shot: Dict[str, Any]) -> None:
     st.session_state.visor_last_send_status = "Queued latest shot for visor delivery."
 
 
-def render_visor_section(compact: bool = False) -> None:
-    st.subheader("Visor Connection")
-    if not compact:
-        st.caption("Use a Chromium-based browser on HTTPS or localhost to pair with the ESP32 visor.")
-
+def mount_visor_connector() -> None:
     visor_event = visor_connector(
         service_uuid=VISOR_SERVICE_UUID,
         characteristic_uuid=VISOR_CHARACTERISTIC_UUID,
@@ -293,6 +289,12 @@ def render_visor_section(compact: bool = False) -> None:
     )
     if visor_event:
         apply_visor_event(visor_event)
+
+
+def render_visor_status(compact: bool = False) -> None:
+    st.subheader("Visor Connection")
+    if not compact:
+        st.caption("Use a Chromium-based browser on HTTPS or localhost to pair with the ESP32 visor.")
 
     if st.session_state.visor_connected:
         device_label = st.session_state.visor_device_name or "Unknown visor"
@@ -322,11 +324,7 @@ def render_visor_section(compact: bool = False) -> None:
         st.caption("Pair the visor here first. Generated test shots only send while the visor is connected.")
 
 
-def render_pi_section(compact: bool = False) -> None:
-    st.subheader("Pi Connection")
-    if not compact:
-        st.caption("Connect to the Raspberry Pi BLE service to receive live shot notifications from PiTrac.")
-
+def mount_pi_connector() -> None:
     pi_event = visor_connector(
         service_uuid=PI_SERVICE_UUID,
         characteristic_uuid=PI_CHARACTERISTIC_UUID,
@@ -337,6 +335,12 @@ def render_pi_section(compact: bool = False) -> None:
     )
     if pi_event:
         apply_pi_event(pi_event)
+
+
+def render_pi_status(compact: bool = False) -> None:
+    st.subheader("Pi Connection")
+    if not compact:
+        st.caption("Connect to the Raspberry Pi BLE service to receive live shot notifications from PiTrac.")
 
     if st.session_state.pi_connected:
         device_label = st.session_state.pi_device_name or "Unknown Pi"
@@ -364,6 +368,17 @@ def render_pi_section(compact: bool = False) -> None:
         st.caption("Live Pi notifications are enabled. Incoming shots will be stored and shown in the active session.")
     else:
         st.caption("Connect the Pi here to receive shot notifications from its BLE characteristic.")
+
+
+def render_connection_hub() -> None:
+    st.title("Device Connections")
+    st.caption("These Bluetooth components stay mounted across app views so active BLE sessions are less likely to drop during navigation.")
+    render_visor_status(compact=True)
+    mount_visor_connector()
+    st.markdown("")
+    render_pi_status(compact=True)
+    mount_pi_connector()
+    st.divider()
 
 
 # ----------------------------
@@ -460,11 +475,6 @@ def render_home() -> None:
     st.title("Smart Golf Visor")
     st.caption("Prototype UI")
 
-    render_visor_section()
-    st.markdown("")
-    render_pi_section()
-    st.divider()
-
     if st.button("Start Session", type="primary", use_container_width=True):
         session_id = create_session(user_id=None)
         st.session_state.session_id = session_id
@@ -512,10 +522,6 @@ def render_home() -> None:
 def render_session() -> None:
     st.title("Current Session")
     st.caption(f"Session ID: {st.session_state.session_id}")
-
-    render_pi_section(compact=True)
-    st.markdown("")
-    render_visor_section(compact=True)
     st.divider()
 
     if len(st.session_state.shots) == 0:
@@ -609,11 +615,6 @@ def render_session() -> None:
 def render_history() -> None:
     st.title("Session History")
 
-    render_pi_section(compact=True)
-    st.markdown("")
-    render_visor_section(compact=True)
-    st.divider()
-
     col_top_a, col_top_b = st.columns([1, 1])
     with col_top_a:
         if st.button("\u2190 Back to Home", use_container_width=True):
@@ -701,6 +702,8 @@ def render_history() -> None:
 # ----------------------------
 # Router
 # ----------------------------
+render_connection_hub()
+
 if st.session_state.view == "home":
     render_home()
 elif st.session_state.view == "session":
