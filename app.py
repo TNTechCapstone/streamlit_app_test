@@ -22,30 +22,62 @@ VISOR_CHARACTERISTIC_UUID = "9a1b0002-6b4f-4f1c-9a12-1234567890ab"
 PI_SERVICE_UUID = "b31072c3-27e7-4da5-95f3-6b59b4a38c61"
 PI_CHARACTERISTIC_UUID = "7fc6f4b6-f4e6-4c65-8889-69e0b9bf9a17"
 
+ADVICE_RULES: List[Dict[str, Any]] = [
+    {
+        "code": 0,
+        "rule_id": "low_launch",
+        "message": "Low launch — consider tee height or adding loft.",
+        "severity": 2,
+    },
+    {
+        "code": 1,
+        "rule_id": "high_backspin",
+        "message": "High backspin — check strike location and dynamic loft.",
+        "severity": 2,
+    },
+    {
+        "code": 2,
+        "rule_id": "large_side_angle",
+        "message": "Large side angle — face/path mismatch; work on start line control.",
+        "severity": 1,
+    },
+    {
+        "code": 3,
+        "rule_id": "good_shot",
+        "message": "Solid shot — keep repeating that swing.",
+        "severity": 0,
+    },
+    {
+        "code": 4,
+        "rule_id": "coach_advice",
+        "message": "Custom coaching advice received.",
+        "severity": 1,
+    },
+]
+ADVICE_BY_RULE_ID = {rule["rule_id"]: rule for rule in ADVICE_RULES}
+
 
 # ----------------------------
 # Helpers (formatting)
 # ----------------------------
 def fmt_speed(mph: Optional[float]) -> str:
-    return "\u2014" if mph is None else f"{mph:.1f} mph"
+    return "—" if mph is None else f"{mph:.1f} mph"
 
 
 def fmt_carry(yards: Optional[float]) -> str:
-    # carry: no decimal precision
-    return "\u2014" if yards is None else f"{int(round(yards))} yd"
+    return "—" if yards is None else f"{int(round(yards))} yd"
 
 
 def fmt_launch(deg: Optional[float]) -> str:
-    # launch angle: 1 decimal
-    return "\u2014" if deg is None else f"{deg:.1f}\N{DEGREE SIGN}"
+    return "—" if deg is None else f"{deg:.1f}°"
 
 
 def fmt_side(deg: Optional[float]) -> str:
-    return "\u2014" if deg is None else f"{deg:.1f}\N{DEGREE SIGN}"
+    return "—" if deg is None else f"{deg:.1f}°"
 
 
 def fmt_rpm(rpm: Optional[float]) -> str:
-    return "\u2014" if rpm is None else f"{int(round(rpm))} rpm"
+    return "—" if rpm is None else f"{int(round(rpm))} rpm"
 
 
 def now_iso_z() -> str:
@@ -54,7 +86,7 @@ def now_iso_z() -> str:
 
 def dt_to_iso_z(dt_val: Any) -> str:
     if dt_val is None:
-        return "\u2014"
+        return "—"
     if isinstance(dt_val, str):
         return dt_val
     if isinstance(dt_val, datetime):
@@ -71,6 +103,16 @@ def safe_float(x: Any) -> Optional[float]:
         return float(x)
     except Exception:
         return None
+
+
+def make_insight(rule_id: str, message_override: Optional[str] = None) -> Dict[str, Any]:
+    rule = ADVICE_BY_RULE_ID[rule_id]
+    return {
+        "code": rule["code"],
+        "message": message_override or rule["message"],
+        "rule_id": rule["rule_id"],
+        "severity": rule["severity"],
+    }
 
 
 def init_visor_state() -> None:
@@ -113,29 +155,21 @@ def build_shot_insight(
 ) -> Dict[str, Any]:
     advice_text = None if coach_advice in (None, "", 0) else str(coach_advice)
     if advice_text:
-        return {"message": advice_text, "rule_id": "coach_advice", "severity": 1}
+        return make_insight("coach_advice", message_override=advice_text)
     if launch_angle is not None and launch_angle < 10.0:
-        return {"message": "Low launch — consider tee height or adding loft.", "rule_id": "low_launch", "severity": 2}
+        return make_insight("low_launch")
     if backspin is not None and backspin > 3800.0:
-        return {
-            "message": "High backspin — check strike location and dynamic loft.",
-            "rule_id": "high_backspin",
-            "severity": 2,
-        }
+        return make_insight("high_backspin")
     if side_angle is not None and abs(side_angle) > 4.0:
-        return {
-            "message": "Large side angle — face/path mismatch; work on start line control.",
-            "rule_id": "large_side_angle",
-            "severity": 1,
-        }
-    return {"message": "Solid shot — keep repeating that swing.", "rule_id": "good_shot", "severity": 0}
+        return make_insight("large_side_angle")
+    return make_insight("good_shot")
 
 
 def build_pi_shot(raw_shot: Dict[str, Any]) -> Dict[str, Any]:
     launch_angle = safe_float(raw_shot.get("la"))
     side_angle = safe_float(raw_shot.get("sa"))
     backspin = safe_float(raw_shot.get("bs"))
-    shot = {
+    return {
         "timestamp": now_iso_z(),
         "speed": safe_float(raw_shot.get("s")),
         "launch_angle": launch_angle,
@@ -145,7 +179,6 @@ def build_pi_shot(raw_shot: Dict[str, Any]) -> Dict[str, Any]:
         "carry": safe_float(raw_shot.get("d")),
         "_insight": build_shot_insight(launch_angle, side_angle, backspin, raw_shot.get("ca")),
     }
-    return shot
 
 
 def ensure_active_session() -> None:
@@ -264,13 +297,14 @@ def apply_pi_event(event: Dict[str, Any]) -> None:
 
 def encode_shot_for_visor(shot: Dict[str, Any]) -> List[int]:
     payload = struct.pack(
-        "<HhhHHh",
+        "<HhhHHhB",
         int(round(float(shot["speed"]) * 10.0)),
         int(round(float(shot["launch_angle"]) * 10.0)),
         int(round(float(shot["side_angle"]) * 10.0)),
         int(round(float(shot["carry"]))),
         int(round(float(shot["backspin"]))),
         int(round(float(shot["sidespin"]))),
+        int(shot.get("_insight", {}).get("code", ADVICE_BY_RULE_ID["good_shot"]["code"])),
     )
     return list(payload)
 
@@ -278,7 +312,8 @@ def encode_shot_for_visor(shot: Dict[str, Any]) -> List[int]:
 def queue_shot_for_visor(shot: Dict[str, Any]) -> None:
     st.session_state.visor_pending_payload = encode_shot_for_visor(shot)
     st.session_state.visor_pending_write_token = now_iso_z()
-    st.session_state.visor_last_send_status = "Queued latest shot for visor delivery."
+    advice_code = shot.get("_insight", {}).get("code", ADVICE_BY_RULE_ID["good_shot"]["code"])
+    st.session_state.visor_last_send_status = f"Queued latest shot for visor delivery with advice code {advice_code}."
 
 
 def mount_visor_connector() -> None:
@@ -315,7 +350,7 @@ def render_visor_status(compact: bool = False) -> None:
     status_rows = [
         {
             "Status": st.session_state.visor_status,
-            "Device": st.session_state.visor_device_name or "\u2014",
+            "Device": st.session_state.visor_device_name or "—",
             "Last Event": st.session_state.visor_last_event,
             "Last Send": st.session_state.visor_last_send_status,
         }
@@ -323,9 +358,9 @@ def render_visor_status(compact: bool = False) -> None:
     st.dataframe(status_rows, use_container_width=True, hide_index=True)
 
     if st.session_state.visor_connected:
-        st.caption("The BLE link is active. New test shots will be sent to the visor automatically.")
+        st.caption("The BLE link is active. New test shots and live Pi shots will be sent to the visor automatically.")
     else:
-        st.caption("Pair the visor here first. Generated test shots only send while the visor is connected.")
+        st.caption("Pair the visor here first. Generated test shots and Pi shots only send while the visor is connected.")
 
 
 def mount_pi_connector() -> None:
@@ -389,25 +424,13 @@ def render_connection_hub() -> None:
 # Mock shot generator (schema-aligned)
 # ----------------------------
 def generate_mock_shot() -> Dict[str, Any]:
-    speed = random.uniform(90.0, 165.0)  # mph
-    launch_angle = random.uniform(8.0, 20.0)  # degrees
-    side_angle = random.uniform(-6.0, 6.0)  # degrees
-    backspin = random.uniform(1800.0, 4200.0)  # rpm
-    sidespin = random.uniform(-900.0, 900.0)  # rpm
-    carry = random.uniform(140.0, 290.0)  # yards
-
-    if launch_angle < 10.0:
-        insight = "Low launch \u2014 consider tee height or adding loft."
-        rule_id, severity = "low_launch", 2
-    elif backspin > 3800.0:
-        insight = "High backspin \u2014 check strike location and dynamic loft."
-        rule_id, severity = "high_backspin", 2
-    elif abs(side_angle) > 4.0:
-        insight = "Large side angle \u2014 face/path mismatch; work on start line control."
-        rule_id, severity = "large_side_angle", 1
-    else:
-        insight = "Solid shot \u2014 keep repeating that swing."
-        rule_id, severity = "good_shot", 0
+    speed = random.uniform(90.0, 165.0)
+    launch_angle = random.uniform(8.0, 20.0)
+    side_angle = random.uniform(-6.0, 6.0)
+    backspin = random.uniform(1800.0, 4200.0)
+    sidespin = random.uniform(-900.0, 900.0)
+    carry = random.uniform(140.0, 290.0)
+    insight = build_shot_insight(launch_angle, side_angle, backspin)
 
     return {
         "timestamp": now_iso_z(),
@@ -417,7 +440,7 @@ def generate_mock_shot() -> Dict[str, Any]:
         "backspin": backspin,
         "sidespin": sidespin,
         "carry": carry,
-        "_insight": {"message": insight, "rule_id": rule_id, "severity": severity},
+        "_insight": insight,
     }
 
 
@@ -425,16 +448,16 @@ def generate_mock_shot() -> Dict[str, Any]:
 # Session State Initialization
 # ----------------------------
 if "view" not in st.session_state:
-    st.session_state.view = "home"  # "home" | "session" | "history"
+    st.session_state.view = "home"
 
 if "session_id" not in st.session_state:
-    st.session_state.session_id = None  # Supabase UUID (string)
+    st.session_state.session_id = None
 
 if "shots" not in st.session_state:
-    st.session_state.shots = []  # local cache of current session shots
+    st.session_state.shots = []
 
 if "history_selected_session_id" not in st.session_state:
-    st.session_state.history_selected_session_id = None  # chosen session in history view
+    st.session_state.history_selected_session_id = None
 
 init_visor_state()
 init_pi_state()
@@ -464,7 +487,7 @@ def load_session_into_ui(session_id: str) -> None:
                 "backspin": safe_float(row.get("backspin")),
                 "sidespin": safe_float(row.get("sidespin")),
                 "carry": safe_float(row.get("carry")),
-                "_insight": {"message": row.get("insight") or "", "rule_id": None, "severity": None},
+                "_insight": {"code": None, "message": row.get("insight") or "", "rule_id": None, "severity": None},
             }
         )
     st.session_state.session_id = session_id
@@ -480,15 +503,13 @@ def render_home() -> None:
     st.caption("Prototype UI")
 
     if st.button("Start Session", type="primary", use_container_width=True):
-        session_id = create_session(user_id=None)
-        st.session_state.session_id = session_id
+        st.session_state.session_id = create_session(user_id=None)
         st.session_state.shots = []
         st.session_state.view = "session"
         st.rerun()
 
     st.markdown("")
 
-    # Continue previous (unfinished) session
     open_session_id = find_latest_open_session_id()
 
     if st.session_state.session_id:
@@ -513,7 +534,6 @@ def render_home() -> None:
 
     st.markdown("")
 
-    # Session History
     if st.button("Session History", use_container_width=True):
         st.session_state.history_selected_session_id = None
         st.session_state.view = "history"
@@ -529,7 +549,7 @@ def render_session() -> None:
     st.divider()
 
     if len(st.session_state.shots) == 0:
-        st.info("Waiting for shot data\u2026 (use Generate Test Shot for now)")
+        st.info("Waiting for shot data… (use Generate Test Shot for now)")
 
         col_a, col_b = st.columns(2)
         with col_a:
@@ -563,7 +583,7 @@ def render_session() -> None:
     c5.metric("Backspin", fmt_rpm(shot.get("backspin")))
     c6.metric("Sidespin", fmt_rpm(shot.get("sidespin")))
 
-    st.markdown(f"**Last update:** {shot.get('timestamp', '\u2014')}")
+    st.markdown(f"**Last update:** {shot.get('timestamp', '—')}")
     if shot.get("_insight", {}).get("message"):
         st.success(f"**Insight:** {shot['_insight']['message']}")
 
@@ -621,7 +641,7 @@ def render_history() -> None:
 
     col_top_a, col_top_b = st.columns([1, 1])
     with col_top_a:
-        if st.button("\u2190 Back to Home", use_container_width=True):
+        if st.button("← Back to Home", use_container_width=True):
             st.session_state.view = "home"
             st.rerun()
     with col_top_b:
@@ -639,7 +659,6 @@ def render_history() -> None:
         st.info("No sessions found yet.")
         return
 
-    # Build selection options
     options: List[str] = []
     label_to_id: Dict[str, str] = {}
 
@@ -649,35 +668,28 @@ def render_history() -> None:
         ended = session_row.get("ended_at")
         status = "ACTIVE" if ended is None else "ENDED"
         nshots = session_row.get("num_shots", 0)
-        label = f"{started} \u2022 {status} \u2022 {nshots} shots \u2022 {sid[:8]}"
+        label = f"{started} • {status} • {nshots} shots • {sid[:8]}"
         options.append(label)
         label_to_id[label] = sid
 
     default_index = 0
     if st.session_state.history_selected_session_id:
-        # Try to keep selection stable
         for index, label in enumerate(options):
             if label_to_id[label] == st.session_state.history_selected_session_id:
                 default_index = index
                 break
 
-    selected_label = st.selectbox(
-        "Select a session",
-        options,
-        index=default_index if options else None,
-    )
+    selected_label = st.selectbox("Select a session", options, index=default_index if options else None)
     selected_session_id = label_to_id[selected_label]
     st.session_state.history_selected_session_id = selected_session_id
 
     st.markdown("")
     if st.button("Load This Session", type="primary", use_container_width=True):
-        # Loads session + shots into the UI, then navigates to session view
         load_session_into_ui(selected_session_id)
         st.rerun()
 
     st.divider()
 
-    # Show shot list for the selected session
     rows = get_session_shots(selected_session_id)
     if not rows:
         st.info("No shots found for this session.")
