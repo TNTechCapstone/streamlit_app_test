@@ -17,8 +17,8 @@ from visor_component import visor_connector
 
 st.set_page_config(page_title="Smart Golf Visor", layout="centered")
 
-VISOR_SERVICE_UUID = "9a1b0001-6b4f-4f1c-9a12-1234567890ab"
-VISOR_CHARACTERISTIC_UUID = "9a1b0002-6b4f-4f1c-9a12-1234567890ab"
+VISOR_SERVICE_UUID = "b015fd54-f43f-4593-b843-da355e49b4d1"
+VISOR_CHARACTERISTIC_UUID = "e0e85378-6c67-4f54-86cb-9b5c6aef0c4f"
 PI_SERVICE_UUID = "b31072c3-27e7-4da5-95f3-6b59b4a38c61"
 PI_CHARACTERISTIC_UUID = "7fc6f4b6-f4e6-4c65-8889-69e0b9bf9a17"
 
