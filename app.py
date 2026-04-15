@@ -25,27 +25,27 @@ PI_CHARACTERISTIC_UUID = "7fc6f4b6-f4e6-4c65-8889-69e0b9bf9a17"
 ADVICE_RULES: List[Dict[str, Any]] = [
     {
         "code": 0,
+        "rule_id": "good_shot",
+        "message": "Solid shot — keep repeating that swing.",
+        "severity": 0,
+    },
+    {
+        "code": 1,
         "rule_id": "low_launch",
         "message": "Low launch — consider tee height or adding loft.",
         "severity": 2,
     },
     {
-        "code": 1,
+        "code": 2,
         "rule_id": "high_backspin",
         "message": "High backspin — check strike location and dynamic loft.",
         "severity": 2,
     },
     {
-        "code": 2,
+        "code": 3,
         "rule_id": "large_side_angle",
         "message": "Large side angle — face/path mismatch; work on start line control.",
         "severity": 1,
-    },
-    {
-        "code": 3,
-        "rule_id": "good_shot",
-        "message": "Solid shot — keep repeating that swing.",
-        "severity": 0,
     },
     {
         "code": 4,
