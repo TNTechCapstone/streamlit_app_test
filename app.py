@@ -31,9 +31,9 @@ ADVICE_RULES: List[Dict[str, Any]] = [
     },
     {
         "code": 1,
-        "rule_id": "low_launch",
-        "message": "Low launch — consider tee height or adding loft.",
-        "severity": 2,
+        "rule_id": "large_side_angle",
+        "message": "Large side angle — face/path mismatch; work on start line control.",
+        "severity": 1,
     },
     {
         "code": 2,
@@ -43,9 +43,9 @@ ADVICE_RULES: List[Dict[str, Any]] = [
     },
     {
         "code": 3,
-        "rule_id": "large_side_angle",
-        "message": "Large side angle — face/path mismatch; work on start line control.",
-        "severity": 1,
+        "rule_id": "low_launch",
+        "message": "Low launch — consider tee height or adding loft.",
+        "severity": 2,
     },
     {
         "code": 4,
