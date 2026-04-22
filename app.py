@@ -500,7 +500,6 @@ def load_session_into_ui(session_id: str) -> None:
 # ----------------------------
 def render_home() -> None:
     st.title("Smart Golf Visor")
-    st.caption("Prototype UI")
 
     if st.button("Start Session", type="primary", use_container_width=True):
         st.session_state.session_id = create_session(user_id=None)
